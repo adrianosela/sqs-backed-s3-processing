@@ -18,7 +18,8 @@ func main() {
 		session.Must(session.NewSession()), // will use default profile from ~/.aws profile
 		sqsQueueArn,
 		uint8(5), // n workers
-		uint8(1)) // batch size
+		uint8(1), // batch size
+		false)    // delete sqs messages after processing
 
 	// stop in 5 seconds
 	go func() {
@@ -26,13 +27,14 @@ func main() {
 		p.Stop()
 	}()
 
+	buff := make([]byte, 1024000)
 	err := p.Run(func(body io.ReadCloser) error {
 		defer body.Close()
-		buff := make([]byte, 256)
-		if _, err := body.Read(buff); err != nil {
+		n, err := body.Read(buff)
+		if err != nil {
 			return fmt.Errorf("Failed to read body: %s", err)
 		}
-		fmt.Println(fmt.Sprintf("First 256 bytes of object contents: %s", string(buff)))
+		fmt.Println(string(buff[:n]))
 		return nil
 	})
 	if err != nil {

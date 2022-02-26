@@ -28,6 +28,8 @@ type Processor struct {
 	sqsClient   *sqs.SQS
 	s3Client    *s3.S3
 
+	deleteMessagesAfter bool
+
 	workers            uint8
 	batchSize          uint8
 	shutdownTimeout    time.Duration
@@ -50,7 +52,7 @@ type msgBody struct {
 	} `json:"Records"`
 }
 
-func New(sess *session.Session, sqsQueueURL string, workers, batchSize uint8) *Processor {
+func New(sess *session.Session, sqsQueueURL string, workers, batchSize uint8, deleteAfter bool) *Processor {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Processor{
@@ -65,6 +67,8 @@ func New(sess *session.Session, sqsQueueURL string, workers, batchSize uint8) *P
 		batchSize:          batchSize,
 		shutdownTimeout:    time.Second * 10,
 		failureBackoffTime: time.Second * 1,
+
+		deleteMessagesAfter: deleteAfter,
 	}
 }
 
@@ -166,6 +170,15 @@ func (p *Processor) doBatch(fn func(io.ReadCloser) error) {
 		if err = fn(getObjectOutput.Body); err != nil {
 			log.Printf("[processor] [job=%d] object processing function returned an error for %s/%s: %s", jobId, bucket, object, err)
 			return // handle?
+		}
+		if p.deleteMessagesAfter {
+			if _, err := p.sqsClient.DeleteMessage(&sqs.DeleteMessageInput{
+				QueueUrl:      aws.String(p.sqsQueueURL),
+				ReceiptHandle: msg.ReceiptHandle,
+			}); err != nil {
+				log.Printf("[processor] [job=%d] Unable to delete message %s after processing: %s", jobId, aws.StringValue(msg.ReceiptHandle), err)
+				return // handle?
+			}
 		}
 	}
 
