@@ -2,7 +2,9 @@ package processor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/sqs"
@@ -22,29 +24,47 @@ type Processor struct {
 
 	sem *semaphore.Weighted
 
-	sqsQueueArn string
+	sqsQueueURL string
 	sqsClient   *sqs.SQS
 	s3Client    *s3.S3
 
-	workers         uint8
-	batchSize       uint8
-	shutdownTimeout time.Duration
+	workers            uint8
+	batchSize          uint8
+	shutdownTimeout    time.Duration
+	failureBackoffTime time.Duration
 }
 
-func New(sess *session.Session, sqsQueueArn string, workers, batchSize uint8) *Processor {
+// there doesn't seem to be a go-sdk built-in
+// definition for the sqs message body of an
+// s3 delivery notification, so we roll our own
+type msgBody struct {
+	Records []struct {
+		S3 struct {
+			Bucket struct {
+				Name string `json:"name"`
+			} `json:"bucket"`
+			Object struct {
+				Key string `json:"key"`
+			} `json:"object"`
+		} `json:"s3"`
+	} `json:"Records"`
+}
+
+func New(sess *session.Session, sqsQueueURL string, workers, batchSize uint8) *Processor {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Processor{
 		ctx:         ctx,
 		cancel:      cancel,
 		sem:         semaphore.NewWeighted(int64(workers)),
-		sqsQueueArn: sqsQueueArn,
+		sqsQueueURL: sqsQueueURL,
 		sqsClient:   sqs.New(sess),
 		s3Client:    s3.New(sess),
 
-		workers:         workers,
-		batchSize:       batchSize,
-		shutdownTimeout: time.Second * 10,
+		workers:            workers,
+		batchSize:          batchSize,
+		shutdownTimeout:    time.Second * 10,
+		failureBackoffTime: time.Second * 1,
 	}
 }
 
@@ -99,12 +119,46 @@ func (p *Processor) Stop() {
 func (p *Processor) doBatch(fn func(io.ReadCloser) error) {
 	defer p.sem.Release(1)
 
-	// FIXME: do work - for now a random sleep
-	// - get batch of SQS messages
-	// - for each message, get the corresponding s3 bucket object
-	// - run the given processing function (fn) for the object
 	jobId := rand.Intn(1000000000)
-	log.Printf("[processor][job=%d] worker starting!", jobId)
-	time.Sleep(time.Millisecond * time.Duration(rand.Intn(5000)))
-	log.Printf("[processor][job=%d] worker done!", jobId)
+	log.Printf("[processor] [job=%d] worker starting!", jobId)
+
+	var err error
+	defer func() {
+		if err != nil {
+			// if an error was encounterd during doBatch
+			// we sleep for some time before releasing the worker
+			// to avoid the next worker running into the same scenario.
+			time.Sleep(p.failureBackoffTime)
+		}
+	}()
+
+	receiveMessageOutput, err := p.sqsClient.ReceiveMessage(&sqs.ReceiveMessageInput{
+		QueueUrl:            aws.String(p.sqsQueueURL),
+		MaxNumberOfMessages: aws.Int64(int64(p.batchSize)),
+	})
+	if err != nil {
+		log.Printf("[processor] [job=%d] worker failed to receive messages: %s", jobId, err)
+		return // handle?
+	}
+
+	for _, msg := range receiveMessageOutput.Messages {
+		var body msgBody
+		if err = json.Unmarshal([]byte(aws.StringValue(msg.Body)), &body); err != nil {
+			log.Printf("[processor] [job=%d] worker failed to json decode message body: %s", jobId, err)
+			return // handle?
+		}
+		bucket := body.Records[0].S3.Bucket.Name
+		object := body.Records[0].S3.Object.Key
+		getObjectOutput, err := p.s3Client.GetObject(&s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(object)})
+		if err != nil {
+			log.Printf("[processor] [job=%d] worker failed to retrieve %s/%s from S3: %s", jobId, bucket, object, err)
+			return // handle?
+		}
+		if err = fn(getObjectOutput.Body); err != nil {
+			log.Printf("[processor] [job=%d] object processing function returned an error for %s/%s: %s", jobId, bucket, object, err)
+			return // handle?
+		}
+	}
+
+	log.Printf("[processor] [job=%d] worker done!", jobId)
 }

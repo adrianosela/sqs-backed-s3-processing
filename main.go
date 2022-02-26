@@ -28,11 +28,11 @@ func main() {
 
 	err := p.Run(func(body io.ReadCloser) error {
 		defer body.Close()
-		buff := make([]byte, 10)
+		buff := make([]byte, 256)
 		if _, err := body.Read(buff); err != nil {
 			return fmt.Errorf("Failed to read body: %s", err)
 		}
-		fmt.Println(fmt.Sprintf("First 10 bytes: %s", string(buff)))
+		fmt.Println(fmt.Sprintf("First 256 bytes of object contents: %s", string(buff)))
 		return nil
 	})
 	if err != nil {
