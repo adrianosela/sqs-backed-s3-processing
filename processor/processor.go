@@ -141,10 +141,19 @@ func (p *Processor) doBatch(fn func(io.ReadCloser) error) {
 		return // handle?
 	}
 
+	if receiveMessageOutput.Messages == nil || len(receiveMessageOutput.Messages) < 1 {
+		log.Printf("[processor] [job=%d] worker found no work!", jobId)
+		return // handle?
+	}
+
 	for _, msg := range receiveMessageOutput.Messages {
 		var body msgBody
 		if err = json.Unmarshal([]byte(aws.StringValue(msg.Body)), &body); err != nil {
 			log.Printf("[processor] [job=%d] worker failed to json decode message body: %s", jobId, err)
+			return // handle?
+		}
+		if body.Records == nil || len(body.Records) < 1 {
+			log.Printf("[processor] [job=%d] worker found no work!: %s", jobId, err)
 			return // handle?
 		}
 		bucket := body.Records[0].S3.Bucket.Name
