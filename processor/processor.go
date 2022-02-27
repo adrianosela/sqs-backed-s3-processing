@@ -157,7 +157,7 @@ func (p *Processor) doBatch(fn func(io.ReadCloser) error) {
 			return // handle?
 		}
 		if body.Records == nil || len(body.Records) < 1 {
-			log.Printf("[processor] [job=%d] worker found no work!: %s", jobId, err)
+			log.Printf("[processor] [job=%d] worker found no work!", jobId)
 			return // handle?
 		}
 		bucket := body.Records[0].S3.Bucket.Name

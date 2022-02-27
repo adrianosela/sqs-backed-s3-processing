@@ -11,12 +11,12 @@ import (
 )
 
 // NOTE: replace with real values of region, account, and name
-const sqsQueueArn = "https://sqs.<QUEUE_AWS_REGION>.amazonaws.com/<QUEUE_AWS_ACCOUNT>/<QUEUE_NAME>"
+const sqsQueueURL = "https://sqs.<QUEUE_AWS_REGION>.amazonaws.com/<QUEUE_AWS_ACCOUNT>/<QUEUE_NAME>"
 
 func main() {
 	p := processor.New(
 		session.Must(session.NewSession()), // will use default profile from ~/.aws profile
-		sqsQueueArn,
+		sqsQueueURL,
 		uint8(5), // n workers
 		uint8(1), // batch size
 		false)    // delete sqs messages after processing
@@ -30,10 +30,15 @@ func main() {
 	buff := make([]byte, 1024000)
 	err := p.Run(func(body io.ReadCloser) error {
 		defer body.Close()
+
 		n, err := body.Read(buff)
 		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
 			return fmt.Errorf("Failed to read body: %s", err)
 		}
+
 		fmt.Println(string(buff[:n]))
 		return nil
 	})
